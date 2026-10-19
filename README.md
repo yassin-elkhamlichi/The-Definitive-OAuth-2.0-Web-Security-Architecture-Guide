@@ -8,7 +8,8 @@
 2. [Foundations of Web Security: The Two Nemeses (XSS & CSRF)](#2-foundations-of-web-security-the-two-nemeses-xss--csrf)
    - [Cross-Site Scripting (XSS)](#cross-site-scripting-xss)
    - [Cross-Site Request Forgery (CSRF)](#cross-site-request-forgery-csrf)
-     - [Defending Against CSRF: Login Security vs. Post-Login Security](#defending-against-csrf-login-security-vs-post-login-security)
+     - [How to Defend Against CSRF](#how-to-defend-against-csrf)
+     - [The Critical Distinction: Login Security vs. Post-Login Security](#the-critical-distinction-login-security-vs-post-login-security)
    - [The Fundamental Distinction: Data Theft vs. Ambient Action](#the-fundamental-distinction-data-theft-vs-ambient-action)
 3. [OAuth 2.0 Core Roles and the Traditional Flow (Without PKCE)](#3-oauth-20-core-roles-and-the-traditional-flow-without-pkce)
    - [OAuth 2.0 vs. OpenID Connect (OIDC)](#oauth-20-vs-openid-connect-oidc)
@@ -148,10 +149,18 @@ Browsers are designed to automatically attach cookies belonging to `bank.com` wh
 
 ---
 
-#### Defending Against CSRF: Login Security vs. Post-Login Security
+#### How to Defend Against CSRF
 
-> [!NOTE]
-> **Terminology Clarification:** When discussing authentication security, developers sometimes mistakenly say "status code" when they actually mean the **OAuth `state` parameter** (or an **Anti-CSRF Token**), rather than an HTTP status code (like `200 OK` or `404 Not Found`).
+Because CSRF relies on **ambient authority** (the browser automatically sending cookies regardless of origin), defeating CSRF requires proving that the user intentionally authorized the request.
+
+Modern web and OAuth architectures use three primary defenses:
+1. **The `SameSite` Cookie Attribute (`SameSite=Strict` / `Lax`):** Configured on session cookies to tell the browser not to attach cookies when requests come from external websites.
+2. **Anti-CSRF Tokens (Double Submit Cookie / Custom Headers):** The frontend attaches a unique token in an HTTP header (e.g., `X-XSRF-TOKEN`). The browser's **Same-Origin Policy (SOP)** prevents external malicious sites from reading or setting this header.
+3. **The OAuth `state` Parameter:** A cryptographic nonce used during OAuth 2.0 redirects to bind the authorization request to the user's session and defeat Login CSRF.
+
+---
+
+#### The Critical Distinction: Login Security vs. Post-Login Security
 
 There is a **very common architectural confusion** between:
 1. **Security during login** (securing the authentication handshake), and
