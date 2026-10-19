@@ -8,6 +8,7 @@
 2. [Foundations of Web Security: The Two Nemeses (XSS & CSRF)](#2-foundations-of-web-security-the-two-nemeses-xss--csrf)
    - [Cross-Site Scripting (XSS)](#cross-site-scripting-xss)
    - [Cross-Site Request Forgery (CSRF)](#cross-site-request-forgery-csrf)
+     - [Defending Against CSRF: Login Security vs. Post-Login Security](#defending-against-csrf-login-security-vs-post-login-security)
    - [The Fundamental Distinction: Data Theft vs. Ambient Action](#the-fundamental-distinction-data-theft-vs-ambient-action)
 3. [OAuth 2.0 Core Roles and the Traditional Flow (Without PKCE)](#3-oauth-20-core-roles-and-the-traditional-flow-without-pkce)
    - [OAuth 2.0 vs. OpenID Connect (OIDC)](#oauth-20-vs-openid-connect-oidc)
@@ -147,16 +148,73 @@ Browsers are designed to automatically attach cookies belonging to `bank.com` wh
 
 ---
 
-#### Defending Against CSRF in OAuth: The `state` Parameter
+#### Defending Against CSRF: Login Security vs. Post-Login Security
 
-In OAuth 2.0, CSRF takes the form of **Login CSRF** (where an attacker tricks a victim's browser into completing an OAuth login using the attacker's account).
+> [!NOTE]
+> **Terminology Clarification:** When discussing authentication security, developers sometimes mistakenly say "status code" when they actually mean the **OAuth `state` parameter** (or an **Anti-CSRF Token**), rather than an HTTP status code (like `200 OK` or `404 Not Found`).
 
-To protect against this, OAuth relies on the **`state` parameter**:
-- **Before Redirecting:** The client creates a cryptographically random string (a nonce called `state`), stores it locally in a temporary `HttpOnly` cookie, and sends it to the Authorization Server.
-- **After Redirecting Back:** When the Authorization Server redirects the user back with the code, it echoes the exact same `state`.
-- **Validation:** The client checks if the returned `state` matches the stored cookie. If they don't match (or if `state` is missing), the login is blocked immediately.
+There is a **very common architectural confusion** between:
+1. **Security during login** (securing the authentication handshake), and
+2. **Security after login** (protecting sensitive actions, data, and money transfers).
 
-*(We cover the detailed step-by-step attack and implementation of `state` in [Section 6: The `state` Parameter: Defeating Login CSRF](#6-the-state-parameter-defeating-login-csrf)).*
+Here is the exact breakdown of how both scenarios work:
+
+---
+
+### 1. Scenario 1: During Login (Authentication Time — Login CSRF)
+
+If an attacker tries to exploit CSRF during the login flow (**Login CSRF**):
+- The attacker sends the victim a link containing the attacker's own authorization code to trick the victim into linking accounts with the attacker.
+- The victim's browser sends the request to your backend.
+- The backend (e.g., Spring Boot) inspects the **`state`** parameter received in the URL and compares it with the `state` value stored in the victim's session cookie.
+- **The Result:** Because the attacker does not have access to the victim's private `state` cookie, the values mismatch. The server drops the request immediately with **`403 Forbidden`**.
+- Furthermore, even if the attacker intercepted the victim's **Authorization Code**, they cannot exchange it for tokens because they lack the private **`code_verifier`** (enforced by PKCE).
+
+---
+
+### 2. Scenario 2: After Login (Post-Authentication — Money Theft & Sensitive Actions)
+
+Here is where the major misconception happens: **The `code_verifier` has ZERO involvement in protecting money transfers or sensitive API calls!**
+
+- **The Lifetime of `code_verifier`:** Its job is 100% finished in the first second after login. Once tokens are received, `code_verifier` is discarded and deleted from memory forever.
+- Once the user is logged in, all subsequent requests to the backend (like `POST /api/transfer-money`) rely on the **Session Cookie** or a **Bearer Token**.
+
+#### How does an attacker attempt CSRF after login?
+1. You are logged into your bank (`mybank.com`), and your session cookie is active in your browser.
+2. In another tab, you open a malicious page created by an attacker.
+3. The malicious page triggers a background request:
+   ```html
+   POST https://mybank.com/api/transfer-money
+   Body: { "amount": 10000, "to": "hacker_account" }
+   ```
+4. The browser automatically attaches your bank's session cookie because the request target is `mybank.com` (**ambient authority**).
+5. At this moment, **there is no `code_verifier` for the server to check**; the server only sees an incoming request with a valid session cookie.
+
+---
+
+### How Your System Actually Stops Money Theft (NOT via PKCE)
+
+To protect funds and sensitive actions from post-login CSRF, the backend uses two defenses that have **nothing to do with PKCE**:
+
+1. **The `SameSite=Strict` (or `Lax`) Cookie Attribute:**
+   When your backend creates the session cookie, it sets `SameSite=Strict`. This instructs the browser: *"If this request comes from any external website (Cross-Site), do NOT attach this cookie."* The forged transfer request arrives at the bank with no cookie, and the server rejects it immediately with **`401 Unauthorized`**.
+2. **Anti-CSRF Tokens (Double Submit Cookie Pattern):**
+   The server requires the frontend to read a random CSRF token and attach it as a custom header on every sensitive request:
+   ```http
+   X-XSRF-TOKEN: random_token_value
+   ```
+   Because the attacker's website is blocked by the **Same-Origin Policy (SOP)**, the attacker cannot read this token from your browser and cannot inject the custom header. The server sees the missing or invalid header and drops the request with **`403 Forbidden`**.
+
+---
+
+### The Golden Rule to Keep Things Clear
+
+| Security Layer | Core Tools | What They Protect |
+| :--- | :--- | :--- |
+| **During Login (Auth Handshake)** | **OAuth `state` Parameter** & **PKCE (`code_verifier`)** | Protects the **login code and tokens** from theft or account linking during transit in the browser. |
+| **After Login (Active Session)** | **`SameSite` Cookies** & **Anti-CSRF Tokens (`X-XSRF-TOKEN`)** | Protects **user money, data, and sensitive actions** from ambient execution after login completes. |
+
+*(We explore the complete step-by-step implementation of `state` in [Section 6: The `state` Parameter: Defeating Login CSRF](#6-the-state-parameter-defeating-login-csrf) and Cookie defenses in [Section 10](#eliminating-csrf-in-cookie-based-bff-samesite--anti-csrf-tokens)).*
 
 ---
 
@@ -465,10 +523,9 @@ Let's revisit the attack with PKCE active:
 > It proves that the client exchanging the code at the token endpoint is the identical client that initiated the request.
 
 > [!WARNING]
-> **PKCE DOES NOT PROTECT AGAINST XSS!**
-> If your application has an XSS vulnerability, an attacker does not need to intercept the code. They can either:
-> 1. Read the `access_token` directly from JavaScript memory or `sessionStorage`.
-> 2. Wait until the token exchange finishes, then invoke `fetch()` to steal the token or make unauthorized API calls.
+> **PKCE DOES NOT PROTECT AGAINST XSS OR POST-LOGIN CSRF!**
+> 1. **XSS (Token Theft):** If an application has XSS, an attacker can extract tokens directly from JavaScript memory / `sessionStorage` without intercepting the code.
+> 2. **Post-Login CSRF (Money / Action Theft):** The `code_verifier`'s lifecycle ends **immediately** after login. It does not protect subsequent API calls (like `/api/transfer-money`). Post-login actions must be protected by `SameSite` cookies and Anti-CSRF tokens.
 
 ---
 
